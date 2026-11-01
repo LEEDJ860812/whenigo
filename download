@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 키·환경설정 (절대 GitHub에 올리지 않기)
+.env
+*.env
+*.key
+
+# 에디터/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
