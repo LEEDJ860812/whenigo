@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>네이버 지도 진단</title>
+<style>
+  body { font-family: system-ui, "Malgun Gothic", sans-serif; margin: 0; padding: 12px; }
+  #map { width: 100%; height: 280px; background: #ddd; border: 1px solid #999; margin: 8px 0; }
+  pre { background: #111; color: #7CFC00; padding: 10px; white-space: pre-wrap; word-break: break-all; font-size: 13px; }
+  a { display: block; margin: 4px 0; }
+  input { padding: 6px; width: 220px; }
+</style>
+</head>
+<body>
+<h3>네이버 지도 진단</h3>
+<div>Client ID: <input id="cid" placeholder="콘솔의 Client ID 붙여넣기"> <button onclick="go()">이 ID로 시도</button></div>
+<div id="links"></div>
+<div id="map"></div>
+<pre id="log">대기 중…</pre>
+
+<script>
+const q = new URLSearchParams(location.search);
+const ID = q.get("id") || "", HOST = q.get("host") || "oapi", PARAM = q.get("param") || "ncpKeyId";
+document.getElementById("cid").value = ID;
+function go() { const v = document.getElementById("cid").value.trim(); location.search = `?id=${encodeURIComponent(v)}&host=${HOST}&param=${PARAM}`; }
+const combos = [["oapi", "ncpKeyId"], ["oapi", "ncpClientId"], ["openapi", "ncpKeyId"], ["openapi", "ncpClientId"]];
+document.getElementById("links").innerHTML = "<b>조합 바꿔 시도:</b>" + combos.map(([h, p]) =>
+  `<a href="?id=${encodeURIComponent(ID)}&host=${h}&param=${p}">${h}.map.naver.com + ${p}${h === HOST && p === PARAM ? "  ← 현재" : ""}</a>`).join("");
+const log = t => { const el = document.getElementById("log"); el.textContent += "\n" + t; };
+if (ID) document.write(`<script src="https://${HOST}.map.naver.com/openapi/v3/maps.js?${PARAM}=${encodeURIComponent(ID)}"><\/script>`);
+</script>
+<script>
+(function () {
+  const el = document.getElementById("log");
+  el.textContent = "접속 주소: " + location.origin + "\n사용 조합: " + HOST + ".map.naver.com + " + PARAM + "\nClient ID: " + (ID || "(비어 있음 · 위 칸에 입력 후 '이 ID로 시도')");
+  if (!ID) return;
+  ["error", "warn"].forEach(k => { const o = console[k]; console[k] = (...a) => { log("[console." + k + "] " + a.join(" ")); o.apply(console, a); }; });
+  window.addEventListener("error", e => log("[스크립트 오류] " + e.message));
+  window.navermap_authFailure = () => log("❌ 인증 실패 콜백이 호출됐어요 (Client ID / 웹 서비스 URL / Dynamic Map 선택 확인)");
+  if (typeof naver === "undefined" || !naver.maps) { log("❌ naver.maps를 불러오지 못했어요 (네트워크 차단·광고차단 확장프로그램·주소 오류 가능)"); return; }
+  log("✔ maps.js 로드됨 (naver.maps 사용 가능)");
+  const box = document.getElementById("map");
+  log("지도 영역 크기: " + box.clientWidth + " x " + box.clientHeight);
+  const map = new naver.maps.Map("map", { center: new naver.maps.LatLng(37.5665, 126.978), zoom: 14 });
+  let ok = false;
+  naver.maps.Event.addListener(map, "tilesloaded", () => { ok = true; log("✅ 지도 타일 로드 성공 → 이 조합이 정답이에요"); });
+  setTimeout(() => { if (!ok) log("❌ 6초 안에 지도 타일이 로드되지 않았어요 → 이 조합은 인증이 안 되는 것 같아요"); }, 6000);
+})();
+</script>
+</body>
+</html>
