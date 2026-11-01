@@ -10,6 +10,9 @@
   #status { position: fixed; top: 0; left: 0; right: 0; z-index: 1000; background: #1f2937; color: #fff;
             padding: 14px 16px; padding-top: calc(14px + env(safe-area-inset-top, 0px)); font-size: 15px; }
   #status b { font-size: 22px; color: #facc15; }
+  #btnTimer { display: none; position: fixed; right: 10px; top: calc(10px + env(safe-area-inset-top, 0px)); z-index: 1001;
+              background: #facc15; color: #111827; border: 0; border-radius: 18px; padding: 8px 12px; font-size: 13px; font-weight: 700; }
+  #btnTimer.on { background: #22c55e; color: #fff; }
   #status small { font-size: 13px; opacity: .8; }
   #mapwrap { position: absolute; top: 0; left: 0; right: 0; bottom: 0; transition: bottom .3s ease; }
   #map { width: 100%; height: 100%; }   /* 네이버 지도가 컨테이너의 position을 바꿔도 크기가 0이 되지 않도록 래퍼 안에서 100% */
@@ -53,6 +56,7 @@
 </head>
 <body>
 <div id="status">정류장을 선택하세요</div>
+<button id="btnTimer">⏰ 타이머 설정</button>
 <div id="mapwrap"><div id="map"></div></div>
 <div id="fatal"></div>
 <div id="tools"><button id="btnFix">📍 위치 보정</button><button id="btnBuf">⏱ 여유 2분</button><button id="btnGps">🎯 GPS로 다시</button><button id="btnRoute">✕ 경로 닫기</button></div>
@@ -235,6 +239,7 @@ function setDim(on) {                                   // 지도를 서서히 �
 function clearRoute(keepMarkers) {
   routeToken++;
   routeObjs.forEach(o => o.setMap(null)); routeObjs = [];
+  tDepart = null; btnTimer.style.display = "none";            // 경로를 닫으면 버튼 숨김 (이미 켠 상태창 타이머는 그대로 유지)
   document.getElementById("note").textContent = "";
   if (!keepMarkers) {                                   // 숨겼던 주변 정류장 마커 복원, 지도 흐림 해제
     setDim(false);
@@ -357,6 +362,16 @@ async function showRoute(bus) {
   setTimeout(() => { if (map.getZoom() < 14) { map.setZoom(14); map.setCenter(ll(station.lat, station.lng)); } }, 500);   // 너무 축소되지 않게 제한
 }
 
+// ---- 안드로이드 상태창 타이머 (앱 안에서만 동작: window.AndroidTimer는 앱이 넣어 주는 연결부)
+let tDepart = null, tArrive = null, tLabel = "", tSent = null;
+const btnTimer = document.getElementById("btnTimer");
+function setTimerBtn(on) { btnTimer.textContent = on ? "⏰ 타이머 켜짐 · 끄기" : "⏰ 타이머 설정"; btnTimer.classList.toggle("on", on); }
+function pushTimer() { window.AndroidTimer.start(tDepart, tLabel, tArrive); tSent = tDepart; setTimerBtn(true); }
+btnTimer.onclick = () => {
+  if (!window.AndroidTimer) { alert("상태창 타이머는 안드로이드 앱에서만 쓸 수 있어요"); return; }
+  if (tSent !== null) { window.AndroidTimer.stop(); tSent = null; setTimerBtn(false); return; }
+  if (tDepart) pushTimer();
+};
 const clock = ms => new Date(ms).toLocaleTimeString("ko-KR", { hour: "numeric", minute: "2-digit" });
 
 function startCountdown(bus, fetchedAt) {
@@ -371,8 +386,11 @@ function startCountdown(bus, fetchedAt) {
     const i = departAt.findIndex(d => d > now);                // 아직 탈 수 있는 첫 버스
     targetIdx = Math.max(i, 0);
     const st = document.getElementById("status");
-    if (i < 0) { st.innerHTML = `${nm} · <small>${info}</small><br>지금 출발해도 놓칠 수 있어요 😢`; return; }
+    if (i < 0) { st.innerHTML = `${nm} · <small>${info}</small><br>지금 출발해도 놓칠 수 있어요 😢`; tDepart = null; btnTimer.style.display = "none"; return; }
     const arriveAt = fetchedAt + bus.times[i] * 1000;
+    tDepart = departAt[i]; tArrive = arriveAt; tLabel = `${nm} ${ORD[i]} ${unit}`;
+    btnTimer.style.display = "block";
+    if (tSent !== null && Math.abs(tDepart - tSent) > 3000) pushTimer();      // 도착정보·도보시간·여유시간이 바뀌면 상태창 타이머도 갱신
     const missed = i > 0 ? `${ORD[0]} ${unit}는 놓쳐요 · ` : "";
     st.innerHTML = `${missed}${nm} ${ORD[i]} ${unit} · ${clock(arriveAt)} 도착<br>` +
                    `<b>${fmt((departAt[i] - now) / 1000)}</b> 뒤 · <b>${clock(departAt[i])}</b> 출발<br><small>${info}</small>`;
