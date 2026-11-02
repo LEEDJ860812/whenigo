@@ -206,6 +206,16 @@ def route(route_id: str, raw: str = ""):
                 "buses": ("buspos/getBusPosByRtid", "busRouteId")}
         if raw:
             return JSONResponse({"xml": seoul_raw(raws[raw][0], busRouteId=rid)}) if raw in raws else {"error": "raw=line|stations|buses"}
+    elif region == "tg":
+        fns = {"stations": lambda: tago_route_stations(rid),
+               "line": lambda: [[x["lat"], x["lng"]] for x in cached(("stations", route_id), 86400, lambda: tago_route_stations(rid))],
+               "buses": lambda: []}
+        if raw:
+            city, _, r_id = rid.partition(":")
+            try:
+                return call_tago("BusRouteInfoInqireService/getRouteAcctoThrghSttnList", cityCode=city, routeId=r_id, numOfRows=300)
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=502)
     else:
         fns = {"stations": lambda: route_stations(rid), "line": lambda: route_line(rid), "buses": lambda: bus_locations(rid)}
         if raw:
@@ -527,6 +537,73 @@ def seoul_bus_locations(rid):
     return out
 
 
+# ---------------------------------------------------------------- 전국 (국토교통부 TAGO 버스 API: 서울·경기 밖 지역 보완)
+TAGO_BASE = "https://apis.data.go.kr/1613000"
+
+
+def tago_key():
+    k = (os.getenv("TAGO_KEY") or os.getenv("GBIS_KEY") or "").strip()      # 같은 공공데이터포털 인증키면 TAGO_KEY 생략 가능
+    return unquote(k) if k else ""
+
+
+def call_tago(path, **params):
+    params.update(serviceKey=tago_key(), _type="json")
+    with urlopen(f"{TAGO_BASE}/{path}?{urlencode(params, quote_via=quote)}", timeout=8) as r:
+        text = r.read().decode("utf-8")
+    try:
+        data = json.loads(text)
+    except ValueError:                                   # 키 미승인 등은 XML 오류문으로 옴
+        raise RuntimeError("TAGO 응답 오류: " + text.strip()[:120])
+    code = find_key(data, "resultCode")
+    if code is not None and str(code) not in ("00", "0"):
+        raise RuntimeError(f"TAGO {code} {find_key(data, 'resultMsg')}")
+    return data
+
+
+def tago_items(data):
+    return [x for x in as_list(find_key(data, "item")) if isinstance(x, dict)]
+
+
+def tago_stations(lat, lng):
+    out = []
+    for s in tago_items(call_tago("BusSttnInfoInqireService/getCrdntPrxmtSttnList", gpsLati=lat, gpsLong=lng, numOfRows=30)):
+        city = s.get("citycode") or s.get("cityCode")
+        try:
+            if city is None or not s.get("nodeid"):
+                continue
+            out.append({"id": f"tg:{city}:{s['nodeid']}", "name": s.get("nodenm", ""),
+                        "lat": float(s["gpslati"]), "lng": float(s["gpslong"])})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def tago_arrivals(station_id):
+    _, city, node = station_id.split(":", 2)
+    groups = {}
+    for b in tago_items(call_tago("ArvlInfoInqireService/getSttnAcctoArvlPrearngeInfoList", cityCode=city, nodeId=node, numOfRows=50)):
+        sec = to_int(b.get("arrtime"))
+        if not sec or sec <= 0:
+            continue
+        g = groups.setdefault(str(b.get("routeid")), {"route": str(b.get("routeno", "")), "times": []})
+        g["times"].append(sec)
+    out = [{"route": g["route"], "dest": "", "times": sorted(g["times"]), "route_id": f"tg:{city}:{rid}", "sta_order": None}
+           for rid, g in groups.items()]
+    return sorted(out, key=lambda x: x["times"][0])
+
+
+def tago_route_stations(rid):                            # rid = "도시코드:노선ID"
+    city, _, route_id = rid.partition(":")
+    out = []
+    for s in tago_items(call_tago("BusRouteInfoInqireService/getRouteAcctoThrghSttnList", cityCode=city, routeId=route_id, numOfRows=300)):
+        try:
+            out.append({"id": f"tg:{city}:{s['nodeid']}", "name": s.get("nodenm", ""), "lat": float(s["gpslati"]),
+                        "lng": float(s["gpslong"]), "seq": to_int(s.get("nodeord")), "turn": False})
+        except (KeyError, TypeError, ValueError):
+            pass
+    return sorted(out, key=lambda x: x["seq"] or 0)
+
+
 # ---------------------------------------------------------------- 엔드포인트
 @app.get("/api/stations")
 def stations(lat: float, lng: float, raw: int = 0):
@@ -552,6 +629,11 @@ def stations(lat: float, lng: float, raw: int = 0):
         except Exception as e:
             if k != "sw":                                # 지하철 조회 실패는 버스 정류장 표시를 막지 않음
                 errors.append(f"{'경기도' if k == 'gg' else '서울시'}: {e}")
+    if tago_key() and (not in_metro(lat, lng) or not out):
+        try:
+            out += cached(("st", "tg", round(lat, 3), round(lng, 3)), 600, lambda: tago_stations(lat, lng))
+        except Exception as e:
+            errors.append(f"전국(TAGO): {e}")
     if not out and errors:
         return JSONResponse({"error": "정류장 조회 실패 · " + " / ".join(errors)}, status_code=502)
     out.sort(key=lambda s: _meters(lat, lng, s["lat"], s["lng"]))
@@ -574,6 +656,8 @@ def arrivals(station_id: str, raw: int = 0):
             if raw:
                 return JSONResponse({"xml": seoul_raw("stationinfo/getStationByUid", arsId=station_id[3:])})
             return seoul_arrivals(station_id)
+        if station_id.startswith("tg:"):
+            return cached(("tgarr", station_id), 15, lambda: tago_arrivals(station_id))
         sid = station_id.split(":", 1)[-1]
         return call_gbis(URL_ARRIVAL, stationId=sid) if raw else real_arrivals(sid)
     except Exception as e:
@@ -583,7 +667,7 @@ def arrivals(station_id: str, raw: int = 0):
 @app.get("/health")
 def health():
     """Render 상태 확인용 (키 설정 여부만 알려주고 값은 노출하지 않음)"""
-    return {"ok": True, "gbis": bool(gbis_key()), "tmap": bool(tmap_key()), "subway": bool(subway_key())}
+    return {"ok": True, "gbis": bool(gbis_key()), "tmap": bool(tmap_key()), "subway": bool(subway_key()), "tago": bool(tago_key())}
 
 
 @app.get("/")
