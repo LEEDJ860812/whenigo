@@ -66,6 +66,8 @@
 const WALK_MS = 1.25;      // 보행속도 m/s (약 4.5km/h)
 const DETOUR = 1.3;        // 직선거리 → 실제 도보거리 보정
 const DEFAULT = [37.738, 127.034];   // 위치 거부 시 의정부 기본 좌표
+let refreshTimer = null, onResume = null;
+function stopCountdown() { clearInterval(timer); clearTimeout(refreshTimer); onResume = null; }
 let map, me = null, station = null, timer = null, walk = null, walkLine = null, walkToken = 0;
 
 function dist(a, b) {      // haversine (m) * 보정
@@ -138,7 +140,7 @@ function markManual(isManual) {
 }
 
 function setMe(lat, lng, isManual) {          // 내 위치를 바꾸고 주변 정류장을 다시 불러온다
-  me = [lat, lng]; station = null; clearInterval(timer); clearRoute(); clearWalk();
+  me = [lat, lng]; station = null; stopCountdown(); clearRoute(); clearWalk();
   meOverlay.setPosition(ll(lat, lng));
   map.setCenter(ll(lat, lng));
   closeSheet();
@@ -149,7 +151,7 @@ function setMe(lat, lng, isManual) {          // 내 위치를 바꾸고 주변 
 }
 
 function startFixing() {
-  fixing = true; clearInterval(timer); closeSheet();
+  fixing = true; stopCountdown(); closeSheet();
   document.getElementById("btnFix").classList.add("on");
   setStatus("지도에서 내 실제 위치를 눌러 주세요");
 }
@@ -196,7 +198,7 @@ const minTxt = t => t < 60 ? "곧 도착" : `${Math.round(t / 60)}분`;
 const ORD = ["첫 번째", "두 번째"];
 
 async function openStation(s) {
-  station = s; clearInterval(timer); clearRoute();
+  station = s; stopCountdown(); clearRoute();
   walk = estimateWalk(); drawWalk(); loadWalk(s);
   document.getElementById("status").textContent = "버스를 선택하세요";
   document.getElementById("sname").textContent = `${s.kind === "subway" ? "🚇" : "🚏"} ${s.name}`;
@@ -384,10 +386,12 @@ btnAlarm.onclick = () => {
   try { localStorage.setItem("alarmMode", ALM[almIdx][0]); } catch (e) {}
   btnAlarm.textContent = ALM[almIdx][1]; sendAlm(true);
 };
+document.addEventListener("visibilitychange", () => { if (!document.hidden && onResume) onResume(); });
 const clock = ms => new Date(ms).toLocaleTimeString("ko-KR", { hour: "numeric", minute: "2-digit" });
 
 function startCountdown(bus, fetchedAt) {
-  clearInterval(timer);
+  stopCountdown();
+  bus = { ...bus };                                          // 목록의 원본은 건드리지 않고 이 카운트다운 전용 사본을 갱신
   const tick = () => {
     const now = Date.now();
     const sub = bus.kind === "subway", nm = sub ? bus.route : bus.route + "번", unit = sub ? "열차" : "버스";
@@ -408,7 +412,26 @@ function startCountdown(bus, fetchedAt) {
     st.innerHTML = `${missed}${nm} ${ORD[i]} ${unit} · ${clock(arriveAt)} 도착<br>` +
                    `<b>${fmt((departAt[i] - now) / 1000)}</b> 뒤 · <b>${clock(departAt[i])}</b> 출발<br><small>${info}</small>`;
   };
-  tick(); timer = setInterval(tick, 1000);
+  // ---- 도착정보 자동 갱신 (화면 숫자 + 상태창 타이머에 모두 반영)
+  // 출발까지 20분 이상: 10분마다 / 10~20분: 5분마다 / 10분 미만: 갱신 없음 (앱 안의 상태창 타이머도 같은 규칙으로 따로 갱신)
+  const myStation = station, canRefresh = bus.kind !== "subway" && !!myStation;
+  const refreshNow = async () => {
+    try {
+      const r = await (await fetch(`/api/arrivals/${encodeURIComponent(myStation.id)}`)).json();
+      const nb = Array.isArray(r) && r.find(x => bus.route_id ? x.route_id === bus.route_id : (x.route === bus.route && x.dest === bus.dest));
+      if (nb && nb.times && nb.times.length) { bus.times = nb.times; fetchedAt = Date.now(); tick(); }
+    } catch (e) {}
+  };
+  const schedule = () => {
+    clearTimeout(refreshTimer);
+    const remain = tDepart ? tDepart - Date.now() : 0;
+    const every = remain > 20 * 60000 ? 10 * 60000 : remain > 10 * 60000 ? 5 * 60000 : 0;
+    const wait = Math.min(every, remain - 10 * 60000);
+    if (!canRefresh || !every || wait < 30000) return;
+    refreshTimer = setTimeout(async () => { await refreshNow(); schedule(); }, wait);
+  };
+  onResume = canRefresh ? async () => { if (Date.now() - fetchedAt > 5 * 60000) { await refreshNow(); schedule(); } } : null;   // 앱으로 돌아왔을 때 오래됐으면 한 번 갱신
+  tick(); timer = setInterval(tick, 1000); schedule();
 }
 
 function start() {
