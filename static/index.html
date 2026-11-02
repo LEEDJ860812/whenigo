@@ -10,7 +10,7 @@
   #status { position: fixed; top: 0; left: 0; right: 0; z-index: 1000; background: #1f2937; color: #fff;
             padding: 14px 16px; padding-top: calc(14px + env(safe-area-inset-top, 0px)); font-size: 15px; }
   #status b { font-size: 22px; color: #facc15; }
-  #btnTimer { display: none; position: fixed; right: 10px; top: calc(10px + env(safe-area-inset-top, 0px)); z-index: 1001;
+  #btnTimer { display: none; position: fixed; right: 10px; top: calc(96px + env(safe-area-inset-top, 0px)); z-index: 1001;
               background: #facc15; color: #111827; border: 0; border-radius: 18px; padding: 8px 12px; font-size: 13px; font-weight: 700; }
   #btnTimer.on { background: #22c55e; color: #fff; }
   #status small { font-size: 13px; opacity: .8; }
@@ -363,10 +363,10 @@ async function showRoute(bus) {
 }
 
 // ---- 안드로이드 상태창 타이머 (앱 안에서만 동작: window.AndroidTimer는 앱이 넣어 주는 연결부)
-let tDepart = null, tArrive = null, tLabel = "", tSent = null;
+let tDepart = null, tArrive = null, tLabel = "", tSent = null, tStation = "", tKey = "", tOffset = 0;
 const btnTimer = document.getElementById("btnTimer");
 function setTimerBtn(on) { btnTimer.textContent = on ? "⏰ 타이머 켜짐 · 끄기" : "⏰ 타이머 설정"; btnTimer.classList.toggle("on", on); }
-function pushTimer() { const ok = window.AndroidTimer.start(tDepart, tLabel, tArrive); if (ok === false) { tSent = null; setTimerBtn(false); return; } tSent = tDepart; setTimerBtn(true); }
+function pushTimer() { const t = window.AndroidTimer; const ok = t.startAuto ? t.startAuto(tDepart, tLabel, tArrive, tStation, tKey, tOffset) : t.start(tDepart, tLabel, tArrive); if (ok === false) { tSent = null; setTimerBtn(false); return; } tSent = tDepart; setTimerBtn(true); }
 btnTimer.onclick = () => {
   if (!window.AndroidTimer) { alert("상태창 타이머는 안드로이드 앱에서만 쓸 수 있어요"); return; }
   if (tSent !== null) { window.AndroidTimer.stop(); tSent = null; setTimerBtn(false); return; }
@@ -400,6 +400,7 @@ function startCountdown(bus, fetchedAt) {
     const st = document.getElementById("status");
     if (i < 0) { st.innerHTML = `${nm} · <small>${info}</small><br>지금 출발해도 놓칠 수 있어요 😢`; tDepart = null; btnTimer.style.display = "none"; return; }
     const arriveAt = fetchedAt + bus.times[i] * 1000;
+    tStation = !sub && station ? String(station.id) : ""; tKey = String(bus.route_id || bus.route); tOffset = walkSec + bufferMin * 60;   // 앱이 도착정보를 다시 받을 때 쓰는 값(지하철은 자동 갱신 제외)
     tDepart = departAt[i]; tArrive = arriveAt; tLabel = `${nm} ${ORD[i]} ${unit}`;
     btnTimer.style.display = "block";
     if (tSent !== null && Math.abs(tDepart - tSent) > 3000) pushTimer();      // 도착정보·도보시간·여유시간이 바뀌면 상태창 타이머도 갱신
